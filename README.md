@@ -168,6 +168,5 @@
 - Проєкт починався як доопрацювання віджета **[dr-mod/air-raid-widget-macos](https://github.com/dr-mod/air-raid-widget-macos)** (MIT, © 2022 Dmytro Panin). Код цієї версії переписано; від вихідної версії лишилися ідея, формат віджета Übersicht та контури областей.
 - Дані: [NEPTUN](https://neptun.in.ua/), [Ubilling](https://wiki.ubilling.net.ua/doku.php?id=aerialalertsapi).
 - Платформа: [Übersicht](https://tracesof.net/uebersicht/).
-- Створено за допомогою ШІ-асистента (Claude, Anthropic).
 
 Ліцензія: [MIT](LICENSE). Збережено сповіщення про авторські права оригінального проєкту.
