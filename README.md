@@ -103,7 +103,6 @@
 
 **Лише у файлі `index.js` (блок `config`):** `soundUrlAlert` / `soundUrlNear` (свій звук за прямим URL), `extrapolateMaxSec`, `staleAfterSec`, `offlineAfterSec`, а також `refreshFrequency`.
 
-![Налаштування](docs/settings.png)
 
 ## Сповіщення і звук
 
