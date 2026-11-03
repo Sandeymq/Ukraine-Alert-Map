@@ -1,37 +1,36 @@
 /* =============================================================================
-   Ukraine Alert Map 3 — віджет для Übersicht (macOS)
+   Ukraine Alert Map 4 — віджет для Übersicht (macOS)
    -----------------------------------------------------------------------------
    ЩО ПОКАЗУЄ
    • карту областей (чорне скло) з тривогами по ОБЛАСТЯХ і РАЙОНАХ; чим довше
      триває тривога — тим темніший колір;
-   • цілі з реалістичними силуетами (шахед, розвідник, крилата й балістична
-     ракета, КАБ, винищувач, бомбардувальник) за координатами й курсом;
-     роботу ППО по областях;
-   • стрічку повідомлень (як новинна) і ІСТОРІЮ цілей/тривог (клік по стрічці);
-   • сповіщення macOS про тривогу та наближення цілей до обраного міста/району.
+   • цілі з реалістичними силуетами за координатами й курсом;
+   • стрічку повідомлень (можна вимкнути в Settings → Display → Ticker) і
+     ІСТОРІЮ цілей/тривог (клік по стрічці або по годиннику);
+   • сповіщення macOS + звук (сирена генерується самим віджетом).
 
-   ДЖЕРЕЛА ДАНИХ (безкоштовні)
-   1) NEPTUN — https://neptun.in.ua/developers — БЕЗ ключа: треки цілей, тривоги
-      по районах/областях, повідомлення з Telegram-каналів, межі районів.
+   ДЖЕРЕЛА ДАНИХ — усі безкоштовні й БЕЗ токенів
+   1) NEPTUN — https://neptun.in.ua/developers (за замовчуванням): цілі, тривоги
+      по районах, повідомлення з Telegram-каналів, межі районів. ЖИВИЙ ПОТІК
+      через WebSocket (оновлення миттєво), а опитування — запасний варіант.
       Умова: видиме посилання на NEPTUN (є внизу віджета).
-   2) alerts.in.ua — https://alerts.in.ua/api-request — токен НА ЗАПИТ,
-      необов'язковий: рівні red/yellow, загрози по областях (у т. ч. ППО).
-
-   ТОКЕН alerts.in.ua (одне з двох)
-   • файл ~/.config/ukraine-alert-widget/alerts_in_ua.token (один рядок), або
-   • вставте нижче в команді: TOKEN='ваш_токен'
+   2) Ubilling — https://wiki.ubilling.net.ua/doku.php?id=aerialalertsapi :
+      лише тривоги по областях; сам зводить кілька незалежних джерел.
+      У Settings → Data можна обрати: Auto (NEPTUN, а якщо мовчить — Ubilling),
+      NEPTUN, Ubilling, Klymenko або JAAM (останні два теж через Ubilling).
 
    НАЛАШТУВАННЯ І КЛІКИ
-   • Значки праворуч угорі: годинник — історія, повзунки — налаштування.
-     Кліки працюють, лише якщо в Übersicht → Preferences задано «Interaction
-     shortcut» (і дано доступ у System Settings → Privacy & Security →
-     Accessibility).
+   • Годинник — історія, повзунки — налаштування. Кліки працюють, лише якщо в
+     Übersicht → Preferences задано «Interaction shortcut» (і дано доступ у
+     System Settings → Privacy & Security → Accessibility).
    • Стартові значення — у блоці `config`; зміни з панелі зберігаються локально
      й мають пріоритет; «Reset» повертає до `config`.
 
-   СПОВІЩЕННЯ
-   • Надсилаються через macOS (osascript). Якщо банер не з'являється: System
-     Settings → Notifications → «Script Editor» → Allow Notifications.
+   СПОВІЩЕННЯ І ЗВУК
+   • Банер — через macOS (osascript). Якщо банера немає: System Settings →
+     Notifications → «Script Editor» → Allow Notifications.
+   • Звук грає afplay (працює й у режимі Focus). Сирена та сигнал наближення
+     синтезуються віджетом; свій звук — config.soundUrlAlert / soundUrlNear.
    • Обране місто/район не залишає ваш Mac (зберігається лише в localStorage).
 
    ВАЖЛИВО: джерела неофіційні, дані можуть запізнюватися або бути неточними.
@@ -40,14 +39,12 @@
 
 // Виконується кожні refreshFrequency мс. Вивід — секції «@@ім'я код@@» + тіло
 // відповіді (розбирає createApp().parseOutput). Немає мережі → віджет покаже
-// «немає даних», а НЕ «тривог немає».
+// «немає даних», а НЕ «тривог немає». Поки живий WebSocket (віджет щоп'ятнадцять
+// секунд «чіпає» файл ws.live), цілі (threats) не опитуються взагалі.
 command: `
-UA='UkraineAlertWidget/3.0 (Ubersicht; personal widget)'
+UA='UkraineAlertWidget/4.0 (Ubersicht; personal widget)'
 D=/tmp/ukraine-alert-widget
 mkdir -p "$D"
-TOKEN=''
-TF="$HOME/.config/ukraine-alert-widget/alerts_in_ua.token"
-if [ -z "$TOKEN" ] && [ -r "$TF" ]; then TOKEN=$(tr -d '[:space:]' < "$TF"); fi
 get() {
   n=$1; u=$2; shift 2
   rm -f "$D/$n.body" "$D/$n.code"
@@ -58,7 +55,7 @@ get() {
 getc() {
   n=$1; t=$2; u=$3; shift 3
   age=$(( $(date +%s) - $(/usr/bin/stat -f %m "$D/$n.code" 2>/dev/null || echo 0) ))
-  case "$(cat "$D/$n.code" 2>/dev/null)" in 200) ttl=$t;; 429) ttl=60;; 401|403) ttl=120;; *) ttl=0;; esac
+  case "$(cat "$D/$n.code" 2>/dev/null)" in 200) ttl=$t;; 429) ttl=60;; *) ttl=0;; esac
   if [ "$age" -ge "$ttl" ]; then get "$n" "$u" "$@"; fi
 }
 emit() {
@@ -71,10 +68,12 @@ fetch_raions() {
   /usr/bin/curl -s --compressed -m 60 -A "$UA" https://neptun.in.ua/raions.geojson | /usr/bin/sed -E 's/([0-9]+[.][0-9][0-9])[0-9]+/\\1/g' | /usr/bin/gzip -c | /usr/bin/base64 > "$RB.tmp"
   if [ "$(wc -c < "$RB.tmp")" -gt 20000 ]; then mv "$RB.tmp" "$RB"; else rm -f "$RB.tmp"; fi
 }
-get nt https://neptun.in.ua/api/v1/threats & p1=$!
+LIVE=0
+wage=$(( $(date +%s) - $(/usr/bin/stat -f %m "$D/ws.live" 2>/dev/null || echo 0) ))
+if [ "$wage" -lt 45 ]; then LIVE=1; else get nt https://neptun.in.ua/api/v1/threats & p1=$!; fi
 get na https://neptun.in.ua/api/v1/alerts & p2=$!
-getc nm 20 https://neptun.in.ua/api/v1/messages & p3=$!
-if [ -n "$TOKEN" ]; then getc au 20 https://api.alerts.in.ua/v1/alerts/active.json -H "Authorization: Bearer $TOKEN" & p4=$!; fi
+getc nm 10 https://neptun.in.ua/api/v1/messages & p3=$!
+getc ub 10 https://ubilling.net.ua/aerialalerts/ & p4=$!
 if [ ! -s "$RB" ] || [ -n "$(find "$RB" -mtime +7 2>/dev/null)" ]; then
   if [ ! -f "$D/raions.lock" ] || [ -n "$(find "$D/raions.lock" -mmin +10 2>/dev/null)" ]; then
     touch "$D/raions.lock"
@@ -82,17 +81,17 @@ if [ ! -s "$RB" ] || [ -n "$(find "$RB" -mtime +7 2>/dev/null)" ]; then
   fi
 fi
 wait $p1 $p2 $p3 $p4
-emit nt
+if [ "$LIVE" = 1 ]; then echo '@@nt skip@@'; echo; else emit nt; fi
 emit na
 emit nm
-if [ -n "$TOKEN" ]; then emit au; else echo '@@au nokey@@'; echo; fi
+emit ub
 if [ -s "$RB" ] && { [ ! -f "$D/raions.sent" ] || [ -n "$(find "$D/raions.sent" -mmin +360 2>/dev/null)" ]; }; then
   echo '@@rg 200@@'; cat "$RB"; echo; touch "$D/raions.sent"
 fi
 `,
 
-// NEPTUN просить REST не частіше ніж раз на 5 с; 10 с — комфортно для всіх.
-refreshFrequency: 10000,
+// 6 с: у межах умов NEPTUN (REST не частіше ніж раз на 5 с). Основне оновлення — живий потік.
+refreshFrequency: 6000,
 
 // ---------------------------------------------------------------------------
 // Стартові налаштування (їх можна змінювати з панелі у віджеті)
@@ -101,31 +100,34 @@ config: {
   lang: 'en',               // 'en' | 'uk'
   appearance: 'dark',       // 'dark' (чорне скло) | 'light' | 'auto' (як система)
   palette: 'ember',         // 'ember' | 'classic'
+  levelMode: 'type',        // 'type': жовтий = БпЛА, червоний = ракети/офіційна тривога; 'red': завжди червоний
   darkestAfterMin: 360,     // за скільки хвилин тривога стає найтемнішою
   size: 1,                  // 0.8 | 1 | 1.2 | 1.4
   compact: false,           // лише лічильники, без карти
   cats: { drone: true, missile: true, tact: true, strat: true, ad: true, other: true },
   minConfidence: 0,         // NEPTUN: 0 будь-яка | 1 середня | 2 висока
-  alertsSource: 'auto',     // 'auto' | 'neptun' | 'aiu' (alerts.in.ua)
-  feedSource: 'auto',       // джерело стрічки/історії: 'auto' | 'neptun' | 'aiu'
-  regionThreats: true,      // іконки «по області» з alerts.in.ua (без координат)
-  districts: true,          // райони: межі та підсвітка (потрібен raions.geojson від NEPTUN)
+  alertsSource: 'auto',     // 'auto' | 'neptun' | 'ubilling' | 'klimenko' | 'jaam'
+  live: true,               // живий потік NEPTUN (WebSocket); false — лише опитування
+  districts: true,          // райони: межі та підсвітка (raions.geojson від NEPTUN)
   partial: true,            // штрихувати область, якщо райони недоступні
   course: true,             // лінія курсу та слід цілей
   advisory: true,           // «спостереження» NEPTUN (напр. зліт МіГ-31К) — приглушено
   stale: false,             // застарілі треки NEPTUN
-  ticker: true,             // стрічка повідомлень внизу
+  ticker: true,             // стрічка повідомлень внизу (вимикається тут або в Settings → Display)
   tickerSpeed: 1,           // 0.7 | 1 | 1.4
   historyHours: 24,         // скільки годин зберігати історію (6 | 24 | 72)
   home: '',                 // «моя область», напр. 'ivano-frankivsk'
   place: '',                // «моє місто», напр. 'bila-tserkva'
   notify: false,            // сповіщення macOS
-  nAlert: true,             // сповіщати про початок тривоги/загрози у моїй області/районі
-  nEnd: true,               // …і про відбій
-  nNear: true,              // сповіщати про цілі поблизу мого міста
+  nAlert: true,             // початок тривоги/загрози у моїй області/районі
+  nEnd: true,               // …і відбій
+  nNear: true,              // цілі поблизу мого міста
   nRadius: 50,              // км: 25 | 50 | 100 | 150
-  nSound: true,             // звук сповіщення
+  nSound: true,             // звук
+  nSoundType: 'siren',      // 'siren' (синтезована віджетом) | 'system' (звуки macOS)
   // нижче — лише тут, у панелі їх немає
+  soundUrlAlert: '',        // свій звук для тривоги: прямий URL на аудіофайл (завантажується один раз)
+  soundUrlNear: '',         // свій звук для наближення цілі
   extrapolateMaxSec: 300,   // скільки секунд екстраполювати рух цілі між оновленнями
   staleAfterSec: 45,        // після цього — жовта крапка «дані можуть бути застарілі»
   offlineAfterSec: 120      // після цього — «немає даних» (а не «спокійно»)
@@ -310,6 +312,10 @@ render: function () {
 .uaw .hrow .tm{font-size:11.5px;color:var(--fg3);font-variant-numeric:tabular-nums;white-space:nowrap}
 .uaw .hempty{padding:18px 0;text-align:center;font-size:12px;color:var(--fg3)}
 .uaw .tk-track.st{animation:none}
+.uaw[data-live="1"] .dot{animation:uaw-live 2.2s ease-in-out infinite}
+@keyframes uaw-live{50%{box-shadow:0 0 0 4px rgba(50,215,75,.16),0 0 10px var(--dot)}}
+@media (prefers-reduced-motion: reduce){.uaw[data-live="1"] .dot{animation:none}}
+.uaw .reg.al{stroke:rgba(255,255,255,.66);stroke-width:1.15px}
 </style>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
@@ -318,7 +324,7 @@ render: function () {
     <path id="uaw-i-cruise" class="i" d="M0-12C1.3-10.2 1.8-7.6 1.8-5V-.4L6.9 3.6V5.2L1.8 4.2V8.2L4.1 10.8V12L0 10.7-4.1 12V10.8L-1.8 8.2V4.2L-6.9 5.2V3.6L-1.8-.4V-5C-1.8-7.6-1.3-10.2 0-12Z"/>
     <path id="uaw-i-ballistic" class="i" d="M0-12.2C1.7-9.6 2.4-6 2.4-2V5.6L6.6 11V12.2L2.4 10.2V11.9H-2.4V10.2L-6.6 12.2V11L-2.4 5.6V-2C-2.4-6-1.7-9.6 0-12.2Z"/>
     <path id="uaw-i-kab" class="i" d="M0-11.8C2.5-10.6 3.2-7 3.2-3V9H-3.2V-3C-3.2-7-2.5-10.6 0-11.8ZM3.2-1.6H9.6V2H3.2ZM-3.2-1.6H-9.6V2H-3.2ZM3.2 8.4H5.8V11.6H-5.8V8.4H-3.2Z"/>
-    <path id="uaw-i-fighter" class="i" d="M0-12 1.3-7.4 1.6-3.4 9.6 2.8V5.4L1.9 3.7 2.3 8.4 4.7 10.3V12L1.3 11.2 0 12.2-1.3 11.2-4.7 12V10.3L-2.3 8.4-1.9 3.7-9.6 5.4V2.8L-1.6-3.4-1.3-7.4Z"/>
+    <g id="uaw-i-fighter"><path class="i" d="M0 -12.6L0.55 -10.4L1.05 -8.4L1.55 -6.2L2 -4L2.7 -2.6L10.9 3.2L11.1 5.4L3.7 4.2L3.9 7.6L6.9 10.3L6.8 11.8L3.4 10.8L2.9 12.4L1.6 12.8L0.8 11.6L0 12.2L-0.8 11.6L-1.6 12.8L-2.9 12.4L-3.4 10.8L-6.8 11.8L-6.9 10.3L-3.9 7.6L-3.7 4.2L-11.1 5.4L-10.9 3.2L-2.7 -2.6L-2 -4L-1.55 -6.2L-1.05 -8.4L-0.55 -10.4Z"/><path class="i" d="M0-8.7C.95-7.5 1.05-5.3 0-3.7C-1.05-5.3-.95-7.5 0-8.7Z" style="fill:var(--halo);stroke:none"/><path class="i" d="M3.1 6.4V11M-3.1 6.4V11M0-3V10.6" style="fill:none;stroke:var(--halo);stroke-width:.7px;stroke-opacity:.8"/></g>
     <g id="uaw-i-bomber"><path class="i" d="M0-12.4 1.3-8.6 1.4-3 12 3.6V6L1.4 3.6 1.2 8.6 4.6 10.2V12L0 10.9-4.6 12V10.2L-1.2 8.6-1.4 3.6-12 6V3.6L-1.4-3-1.3-8.6Z"/><path class="i" d="M4.2-.3V3.9M7.8 1.8V6M-4.2-.3V3.9M-7.8 1.8V6" style="stroke-width:2.1px;stroke-linecap:round;fill:none;stroke:var(--c)"/></g>
     <g id="uaw-i-shield"><path class="i" d="M0-11.5 9-8V.5C9 6.2 5 10 0 12-5 10-9 6.2-9 .5V-8Z"/><path class="i" d="M-3.6 2.4 0-2 3.6 2.4" style="fill:none;stroke:var(--halo);stroke-width:1.5px"/></g>
     <path id="uaw-i-diamond" class="i" d="M0-9 9 0 0 9-9 0Z"/>
@@ -415,7 +421,7 @@ createApp: function (domEl) {
   var DEFAULTS = this.config;
   var NS = 'http://www.w3.org/2000/svg';
   var SKEY = 'uaw.settings.v3', HKEY = 'uaw.history.v1', RKEY = 'uaw.raions.v1';
-  var NOT_UI = { extrapolateMaxSec: 1, staleAfterSec: 1, offlineAfterSec: 1 };
+  var NOT_UI = { extrapolateMaxSec: 1, staleAfterSec: 1, offlineAfterSec: 1, soundUrlAlert: 1, soundUrlNear: 1 };
   var UI_KEYS = Object.keys(DEFAULTS).filter(function (k) { return !NOT_UI[k]; });
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function now_() { return Date.now(); }
@@ -452,26 +458,21 @@ createApp: function (domEl) {
     'cherkasy': ['Черкаська обл.', 'Cherkasy', 4], 'chernivtsi': ['Чернівецька обл.', 'Chernivtsi', 3], 'chernihiv': ['Чернігівська обл.', 'Chernihiv', 5]
   };
   var REG_ORDER = Object.keys(REG).sort(function (a, b) { return REG[a][1].localeCompare(REG[b][1]); });
-  var AIU_UID = { 3: 'khmelnytskyi', 4: 'vinnytsia', 5: 'rivne', 8: 'volyn', 9: 'dnipro', 10: 'zhytomyr', 11: 'zakarpattia', 12: 'zaporizhzhia',
-    13: 'ivano-frankivsk', 14: 'kyiv-oblast', 15: 'kirovohrad', 16: 'luhansk', 17: 'mykolaiv', 18: 'odesa', 19: 'poltava', 20: 'sumy',
-    21: 'ternopil', 22: 'kharkiv', 23: 'kherson', 24: 'cherkasy', 25: 'chernihiv', 26: 'chernivtsi', 27: 'lviv', 28: 'donetsk',
-    29: 'crimea', 30: 'sevastopol', 31: 'kyiv-city' };
   var NAME_RULES = [
     [/севастопол|sevastopol/, 'sevastopol'], [/крим|krym|crimea/, 'crimea'],
     [/^(м\.?|місто)?\s*київ$|^kyiv(\s+city)?$|^kiev$|m-kiyiv/, 'kyiv-city'],
     [/київськ|київщин|kyiv\s*obl|kyivska|kiyivska|kiivska/, 'kyiv-oblast'],
-    [/вінниц|vinnyts|vinnits/, 'vinnytsia'], [/волин|volyn|volin/, 'volyn'], [/дніпропетр|дніпро|dnipro|dnepr/, 'dnipro'],
-    [/донецьк|donet|donec/, 'donetsk'], [/житомир|zhytomyr|zitomir/, 'zhytomyr'], [/закарпат|zakarpat/, 'zakarpattia'],
-    [/запоріз|zaporiz|zaporizh/, 'zaporizhzhia'], [/івано|ivano/, 'ivano-frankivsk'],
-    [/кіровоград|кропивниц|kirovohrad|kropyvnyts|kirovograd/, 'kirovohrad'], [/луганськ|luhan|lugan/, 'luhansk'],
-    [/львів|lviv|lvov/, 'lviv'], [/миколаїв|mykolai|mikolay|nikolaev/, 'mykolaiv'], [/одес|odes/, 'odesa'],
-    [/полтав|poltav/, 'poltava'], [/рівн|rivne|rivnen/, 'rivne'], [/сумськ|sumy|sumska/, 'sumy'],
+    [/вінниц|вінничч|vinnyts|vinnits/, 'vinnytsia'], [/волин|volyn|volin/, 'volyn'], [/дніпропетр|дніпро|dnipro|dnepr/, 'dnipro'],
+    [/донецьк|донеч|donet|donec/, 'donetsk'], [/житомир|zhytomyr|zitomir/, 'zhytomyr'], [/закарпат|zakarpat/, 'zakarpattia'],
+    [/запоріз|запоріж|zaporiz|zaporizh/, 'zaporizhzhia'], [/івано|прикарпат|ivano/, 'ivano-frankivsk'],
+    [/кіровоград|кропивниц|kirovohrad|kropyvnyts|kirovograd/, 'kirovohrad'], [/луганськ|луганщ|luhan|lugan/, 'luhansk'],
+    [/львів|lviv|lvov/, 'lviv'], [/миколаїв|mykolai|mikolay|nikolaev/, 'mykolaiv'], [/одес|одещ|odes/, 'odesa'],
+    [/полтав|poltav/, 'poltava'], [/рівн|rivne|rivnen/, 'rivne'], [/сумськ|сумщ|sumy|sumska/, 'sumy'],
     [/тернопіл|ternopil|ternopol/, 'ternopil'], [/харків|kharkiv|xarkiv|harkiv/, 'kharkiv'], [/херсон|kherson|xerson/, 'kherson'],
-    [/хмельниц|khmelnyts|xmelnic|khmel/, 'khmelnytskyi'], [/черкас|cherkas|cerkas/, 'cherkasy'],
-    [/чернівц|чернівец|chernivts|cernivec|chernivec/, 'chernivtsi'], [/чернігів|chernihiv|cernigiv/, 'chernihiv']
+    [/хмельниц|хмельничч|khmelnyts|xmelnic|khmel/, 'khmelnytskyi'], [/черкас|черкащ|cherkas|cerkas/, 'cherkasy'],
+    [/чернівц|чернівец|буковин|chernivts|cernivec|chernivec/, 'chernivtsi'], [/чернігів|chernihiv|cernigiv/, 'chernihiv']
   ];
-  function regionId(name, uid) {
-    if (uid != null && AIU_UID[uid]) return AIU_UID[uid];
+  function regionId(name) {
     var s = String(name == null ? '' : name).toLowerCase().replace(/[’ʼ`]/g, "'").trim();
     if (!s) return null;
     for (var i = 0; i < NAME_RULES.length; i++) if (NAME_RULES[i][0].test(s)) return NAME_RULES[i][1];
@@ -541,11 +542,6 @@ createApp: function (domEl) {
     if (/air.?def|ppo/.test(s)) return ['ad', 'shield'];
     return ['other', 'diamond'];
   }
-  var AIU_THREAT = {
-    drones: ['drone', 'drone'], ballistic_missiles: ['missile', 'ballistic'], cruise_missiles: ['missile', 'cruise'],
-    unspecified_missiles: ['missile', 'cruise'], guided_aerial_bombs: ['tact', 'kab'], tactic_aircraft_activity: ['tact', 'fighter'],
-    mig31k_departure: ['tact', 'fighter'], strategic_aircraft_activity: ['strat', 'bomber'], air_defense: ['ad', 'shield'], unknown: ['other', 'diamond']
-  };
   var PAL = {
     ember: { red: ['#FF5A4D', '#C4223A', '#580E24'], yellow: ['#EDC13A', '#A98717', '#5C4A12'] },
     classic: { red: ['#FF3B30', '#B3261E', '#5C1512'], yellow: ['#F5CD0A', '#A88A0A', '#574A08'] }
@@ -556,48 +552,56 @@ createApp: function (domEl) {
     en: {
       title: 'Ukraine Alert Map', asOf: 'as of', loading: 'Loading…', off: 'Data unavailable', offSub: 'Last update at {t}. Follow official alerts.',
       offNever: 'No response yet. Follow official alerts.',
-      legal: 'Data: <a data-url="https://neptun.in.ua/" href="https://neptun.in.ua/">NEPTUN</a>, alerts.in.ua. Unofficial: follow sirens and official alerts.',
+      legal: 'Data: <a data-url="https://neptun.in.ua/" href="https://neptun.in.ua/">NEPTUN</a>, Ubilling. Unofficial: follow sirens and official alerts.',
       history: 'History', settings: 'Settings', tDisplay: 'Display', tData: 'Data', tAlerts: 'Notify',
       lang: 'Language', appearance: 'Appearance', palette: 'Colors', darkest: 'Darkest after', targets: 'Targets', conf: 'Min. confidence',
-      src: 'Alerts from', feed: 'Feed from', size: 'Size', home: 'My region', place: 'My place', regionOnly: 'Whole region', none: 'None',
+      src: 'Alerts from', sndType: 'Sound', siren: 'Siren', system: 'System', size: 'Size', home: 'My region', place: 'My place', regionOnly: 'Whole region', none: 'None',
       auto: 'Auto', dark: 'Dark', light: 'Light', ember: 'Ember', classic: 'Classic', any: 'Any', medium: 'Medium', high: 'High',
-      tRegionThreats: 'Region-level threats', tDistricts: 'Districts', tPartial: 'Hatch partial alerts', tCourse: 'Course and trails',
+      tLive: 'Live stream', tDistricts: 'Districts', tPartial: 'Hatch partial alerts', tCourse: 'Course and trails',
       tAdvisory: 'Observations', tStale: 'Stale tracks', tCompact: 'Counters only', tTicker: 'Ticker', speed: 'Ticker speed',
       slow: 'Slow', normal: 'Normal', fast: 'Fast', keep: 'Keep history',
       fAll: 'All', fTargets: 'Targets', fAlerts: 'Alerts', fMsgs: 'Messages', clear: 'Clear', hEmpty: 'Nothing here yet.',
       hFoot: 'Stored on this Mac only.',
       nOn: 'Notifications', nAlert: 'Alert starts', nEnd: 'All clear', nNear: 'Targets near me', radius: 'Radius', nSound: 'Sound', nTest: 'Send test',
       nHint: 'If no banner appears: System Settings → Notifications → Script Editor → Allow.',
-      reset: 'Reset', noToken: 'no token (optional)', ok: 'ok', error: 'error',
+      reset: 'Reset', ok: 'ok', error: 'error',
       calm: 'Calm', red: 'Air raid', yellow: 'Threat', regionsAlert: 'regions under alert', nRed: 'air raid', nYellow: 'threat',
       nearest: 'Nearest', nothingNear: 'No targets nearby', noData: 'No data', toYou: 'toward you', h: 'h', m: 'min', d: 'd', km: 'km',
       nStartRed: 'Air raid alert', nStartYellow: 'Threat reported', nStartRaion: 'Air raid in your district', nEndT: 'All clear',
       nNearT: 'Target near {p}', nRegT: 'Reported in {r}', nRaionT: 'Target in your district', testT: 'Test notification',
       testB: 'Notifications work.', eta: 'ETA ~{n} min', heading: 'heading {x}', dirs: ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'],
-      alertStart: '{r}: air raid', alertThreat: '{r}: threat', alertEnd: '{r}: alert ended', tgtNew: '{t} — {l}', tickerEmpty: 'No recent messages'
+      levelMode: 'Alert colors', byType: 'By threat', allRed: 'Always red', thMissile: 'missiles', thDrone: 'drones', nMissile: 'Missile danger', nDrone: 'Drone threat',
+      thMissileIn: '{r}: missile danger', thDroneIn: '{r}: drone threat', frameAgo: 'last frame {n} s ago',
+      levelHint: 'Yellow: drones only. Red: missile danger, or an alert with no known targets. Bright outline: official alert.',
+      alertStart: '{r}: air raid', alertThreat: '{r}: threat', alertEnd: '{r}: alert ended', tgtNew: '{t} — {l}', tickerEmpty: 'No recent messages', tSiren: 'Test siren', tNear: 'Test approach', stream: 'stream', sLive: 'live', sRetry: 'reconnecting', sOff: 'off', local: 'Local log',
+      nHint2: 'The siren is generated by the widget itself; for your own sound set soundUrlAlert / soundUrlNear in config.'
     },
     uk: {
       title: 'Мапа тривог', asOf: 'станом на', loading: 'Завантаження…', off: 'Немає даних', offSub: 'Останнє оновлення о {t}. Орієнтуйтесь на офіційні оповіщення.',
       offNever: 'Відповіді ще немає. Орієнтуйтесь на офіційні оповіщення.',
-      legal: 'Дані: <a data-url="https://neptun.in.ua/" href="https://neptun.in.ua/">NEPTUN</a>, alerts.in.ua. Неофіційно: слухайте сирени й офіційні оповіщення.',
+      legal: 'Дані: <a data-url="https://neptun.in.ua/" href="https://neptun.in.ua/">NEPTUN</a>, Ubilling. Неофіційно: слухайте сирени й офіційні оповіщення.',
       history: 'Історія', settings: 'Налаштування', tDisplay: 'Вигляд', tData: 'Дані', tAlerts: 'Сповіщення',
       lang: 'Мова', appearance: 'Тема', palette: 'Кольори', darkest: 'Найтемніший через', targets: 'Цілі', conf: 'Мін. достовірність',
-      src: 'Тривоги з', feed: 'Стрічка з', size: 'Розмір', home: 'Моя область', place: 'Моє місто', regionOnly: 'Уся область', none: 'Немає',
+      src: 'Тривоги з', sndType: 'Звук', siren: 'Сирена', system: 'Системний', size: 'Розмір', home: 'Моя область', place: 'Моє місто', regionOnly: 'Уся область', none: 'Немає',
       auto: 'Авто', dark: 'Темна', light: 'Світла', ember: 'Жар', classic: 'Класична', any: 'Будь-яка', medium: 'Середня', high: 'Висока',
-      tRegionThreats: 'Загрози по областях', tDistricts: 'Райони', tPartial: 'Штрихувати часткові', tCourse: 'Курс і сліди',
+      tLive: 'Живий потік', tDistricts: 'Райони', tPartial: 'Штрихувати часткові', tCourse: 'Курс і сліди',
       tAdvisory: 'Спостереження', tStale: 'Застарілі треки', tCompact: 'Лише лічильники', tTicker: 'Стрічка', speed: 'Швидкість стрічки',
       slow: 'Повільно', normal: 'Звичайно', fast: 'Швидко', keep: 'Зберігати історію',
       fAll: 'Усе', fTargets: 'Цілі', fAlerts: 'Тривоги', fMsgs: 'Повідомлення', clear: 'Очистити', hEmpty: 'Поки порожньо.',
       hFoot: 'Зберігається лише на цьому Mac.',
       nOn: 'Сповіщення', nAlert: 'Початок тривоги', nEnd: 'Відбій', nNear: 'Цілі поблизу', radius: 'Радіус', nSound: 'Звук', nTest: 'Надіслати тест',
       nHint: 'Немає банера: Системні налаштування → Сповіщення → Script Editor → Дозволити.',
-      reset: 'Скинути', noToken: 'немає токена (необов’язково)', ok: 'ок', error: 'помилка',
+      reset: 'Скинути', ok: 'ок', error: 'помилка',
       calm: 'Спокійно', red: 'Тривога', yellow: 'Загроза', regionsAlert: 'областей під тривогою', nRed: 'тривога', nYellow: 'загроза',
       nearest: 'Найближча', nothingNear: 'Поблизу цілей немає', noData: 'Немає даних', toYou: 'у ваш бік', h: 'год', m: 'хв', d: 'д', km: 'км',
       nStartRed: 'Повітряна тривога', nStartYellow: 'Загроза', nStartRaion: 'Тривога у вашому районі', nEndT: 'Відбій',
       nNearT: 'Ціль поблизу: {p}', nRegT: 'Повідомлення: {r}', nRaionT: 'Ціль у вашому районі', testT: 'Тестове сповіщення',
       testB: 'Сповіщення працюють.', eta: 'за ~{n} хв', heading: 'курс {x}', dirs: ['Пн', 'ПнСх', 'Сх', 'ПдСх', 'Пд', 'ПдЗх', 'Зх', 'ПнЗх'],
-      alertStart: '{r}: тривога', alertThreat: '{r}: загроза', alertEnd: '{r}: відбій', tgtNew: '{t} — {l}', tickerEmpty: 'Свіжих повідомлень немає'
+      levelMode: 'Кольори тривог', byType: 'За загрозою', allRed: 'Завжди червоні', thMissile: 'ракети', thDrone: 'БпЛА', nMissile: 'Ракетна небезпека', nDrone: 'Загроза БпЛА',
+      thMissileIn: '{r}: ракетна небезпека', thDroneIn: '{r}: загроза БпЛА', frameAgo: 'останній кадр {n} с тому',
+      levelHint: 'Жовтий: лише БпЛА. Червоний: ракетна небезпека або тривога без відомих цілей. Яскравий контур: офіційна тривога.',
+      alertStart: '{r}: тривога', alertThreat: '{r}: загроза', alertEnd: '{r}: відбій', tgtNew: '{t} — {l}', tickerEmpty: 'Свіжих повідомлень немає', tSiren: 'Тест сирени', tNear: 'Тест наближення', stream: 'потік', sLive: 'наживо', sRetry: 'перепідключення', sOff: 'вимкнено', local: 'Локальний журнал',
+      nHint2: 'Сирену віджет генерує сам; свій звук задайте в config: soundUrlAlert / soundUrlNear.'
     }
   };
   function tr(k, v) {
@@ -681,7 +685,7 @@ createApp: function (domEl) {
   }
 
   // --------------------------------------------------------------------- розбір відповідей
-  var D = { nt: null, na: null, nm: null, au: null, ok: { nt: 0, na: 0, nm: 0, au: 0 }, err: { nt: '', na: '', nm: '', au: '' }, hasToken: null, tried: 0 };
+  var D = { nt: null, na: null, nm: null, ub: null, alt: null, altSrc: '', naSrc: '', naAt: 0, ok: { nt: 0, na: 0, nm: 0, ub: 0, alt: 0 }, err: { nt: '', na: '', nm: '', ub: '', alt: '' }, tried: 0 };
   function parseOutput(out) {
     var res = {}, re = /@@(\w+) (\w+)@@\r?\n/g, m, marks = [];
     while ((m = re.exec(out))) marks.push({ n: m[1], code: m[2], from: re.lastIndex, at: m.index });
@@ -756,50 +760,42 @@ createApp: function (domEl) {
     });
     return { regions: out, rl: rl };
   }
-  function normAiu(j) {
-    if (!j || !Array.isArray(j.alerts)) return null;
-    var acc = {}, threats = [], seen = {}, rl = [], feed = [];
-    j.alerts.forEach(function (a) {
-      if (a.finished_at || (a.alert_type && a.alert_type !== 'air_raid')) return;
-      var id = regionId(a.location_oblast || a.location_title, a.location_oblast_uid != null ? a.location_oblast_uid : (a.location_type === 'oblast' ? a.location_uid : null));
-      if (!id) return;
-      var lvl = a.alert_level === 'yellow' ? 'yellow' : 'red', since = Date.parse(a.started_at) || 0;
-      var whole = a.location_type === 'oblast' || id === 'kyiv-city' || id === 'sevastopol';
-      var r = acc[id] || (acc[id] = {}), l = r[lvl] || (r[lvl] = { since: Infinity, full: false });
-      if (since) l.since = Math.min(l.since, since);
-      if (whole) l.full = true;
-      var rn = a.location_type === 'raion' ? a.location_title : (a.location_raion || '');
-      if (rn) rl.push({ norm: normRaion(rn), name: String(rn), region: id, level: lvl, since: since });
-      feed.push({ t: since, region: id, level: lvl, kind: 'alert', notes: a.notes ? String(a.notes) : '' });
-      (a.threats || []).forEach(function (th) {
-        var m = AIU_THREAT[th.threat_type] || AIU_THREAT.unknown, key = id + '|' + m[0], tl = th.level === 'yellow' ? 'yellow' : 'red', ts = Date.parse(th.started_at) || since;
-        feed.push({ t: ts, region: id, level: tl, kind: 'threat', icon: m[1], cat: m[0] });
-        if (seen[key]) return; seen[key] = 1;
-        threats.push({ region: id, cat: m[0], icon: m[1], level: tl, since: ts });
-      });
-    });
-    var regions = {};
-    Object.keys(acc).forEach(function (id) {
-      var l = acc[id].red ? 'red' : 'yellow', x = acc[id][l];
-      regions[id] = { level: l, since: isFinite(x.since) ? x.since : 0, full: x.full };
-    });
-    feed.sort(function (a, b) { return b.t - a.t; });
-    return { regions: regions, threats: threats, rl: rl, feed: feed };
+  var firstSeen = {};     // коли ми вперше побачили тривогу в області (якщо джерело не дає часу початку)
+  function parseSince(v) {
+    if (!v) return 0;
+    var t = typeof v === 'number' ? (v < 1e12 ? v * 1000 : v) : Date.parse(String(v).replace(' ', 'T'));
+    return isFinite(t) && t > 0 && t <= Date.now() + 60000 ? t : 0;
   }
-  var NORM = { nt: normThreats, na: normNeptunAlerts, nm: normMessages, au: normAiu };
+  function normUbilling(j) {
+    if (!j || !j.states || typeof j.states !== 'object') return null;
+    var regions = {}, seen = {};
+    Object.keys(j.states).forEach(function (name) {
+      var st = j.states[name]; if (!st || !st.alertnow) return;
+      var id = regionId(name); if (!id) return;
+      seen[id] = 1;
+      if (!firstSeen[id]) firstSeen[id] = Date.now();
+      regions[id] = { level: 'red', since: parseSince(st.changed || st.since || st.started_at) || firstSeen[id], full: true };
+    });
+    Object.keys(firstSeen).forEach(function (id) { if (!seen[id]) delete firstSeen[id]; });
+    return { regions: regions, rl: [] };
+  }
+  var NORM = { nt: normThreats, na: normNeptunAlerts, nm: normMessages, ub: normUbilling };
 
   var pendingRG = null;
   function ingest(out, now) {
     var sec = parseOutput(out); D.tried = now;
-    ['nt', 'na', 'nm', 'au'].forEach(function (k) {
+    ['nt', 'na', 'nm', 'ub'].forEach(function (k) {
       var s = sec[k];
       if (!s) { D.err[k] = 'no output'; return; }
-      if (k === 'au') { D.hasToken = s.code !== 'nokey'; if (!D.hasToken) { D.err.au = ''; D.au = null; D.ok.au = 0; return; } }   // токен прибрали — старі дані не тримаємо
+      if (s.code === 'skip') return;                                   // потік WebSocket живий — опитування не потрібне
       if (s.code !== '200') { D.err[k] = s.code === '000' ? 'offline' : s.code; return; }
+      if (k === 'nt' && wsLive(now)) return;                           // свіжіші дані вже прийшли через потік
+      if (k === 'na' && D.naSrc === 'ws' && now - D.naAt < 20000) return;
       var j; try { j = JSON.parse(s.body); } catch (e) { D.err[k] = 'bad JSON'; return; }
       var n = NORM[k](j);
       if (!n) { D.err[k] = 'bad format'; return; }
       D[k] = n; D.ok[k] = now; D.err[k] = '';
+      if (k === 'na') { D.naSrc = 'rest'; D.naAt = now; }
     });
     if (sec.rg && sec.rg.code === '200' && sec.rg.body) pendingRG = sec.rg.body;
   }
@@ -867,31 +863,72 @@ createApp: function (domEl) {
   // --------------------------------------------------------------------- модель вигляду
   function fresh(k, now) { return D[k] && (now - D.ok[k]) < S.offlineAfterSec * 1000; }
   function dataState(now) {
-    var last = Math.max(D.ok.nt, D.ok.na, D.ok.au);
+    var last = Math.max(D.ok.nt, D.ok.na, D.ok.ub, D.ok.alt);
     if (!last) return D.tried ? 'off' : 'loading';
     var age = now - last;
     if (age > S.offlineAfterSec * 1000) return 'off';
     if (age > S.staleAfterSec * 1000) return 'stale';
-    return ['nt', 'na'].concat(D.hasToken ? ['au'] : []).some(function (k) { return D.err[k]; }) ? 'warn' : 'live';
+    return ['nt', 'na'].some(function (k) { return D.err[k]; }) && !wsLive(now) ? 'warn' : 'live';
   }
   var MARGIN = { x0: -70, x1: 1080, y0: -50, y1: 720 };
+  var ALERT_SRC = ['auto', 'neptun', 'ubilling', 'klimenko', 'jaam'];
+  var SRC_LABEL = { auto: 'Auto', neptun: 'NEPTUN', ubilling: 'Ubilling', klimenko: 'Klymenko', jaam: 'JAAM' };
+  // ППО: прямого поля в NEPTUN немає, тому беремо з текстів повідомлень («працює ППО по Одещині») за останні 15 хв
+  var AD_WORDS = /ппо|протиповітр/, AD_ACT = /працю|робот|відпрацю|збит|збил|збив|знищ|відбив|відбит|перехопл/;
+  function regionsInText(t) {
+    var s = String(t).toLowerCase().replace(/[’ʼ`]/g, "'"), out = {};
+    NAME_RULES.forEach(function (r) { if (r[1] !== 'kyiv-city' && r[0].test(s)) out[r[1]] = 1; });
+    if (/(^|[^а-яіїєґ'])(київ($|[^а-яіїєґ'])|києв)/.test(s)) out['kyiv-city'] = 1;   // Київ, Києва, Києвом… але не Київщина/Київська
+    return Object.keys(out);
+  }
+  function adRegions(now) {
+    var res = {};
+    if (D.nm) D.nm.list.forEach(function (m) {
+      if (now - m.t > 15 * 60000) return;
+      var t = m.text.toLowerCase();
+      if (AD_WORDS.test(t) && AD_ACT.test(t)) regionsInText(t).forEach(function (id) { res[id] = 1; });
+    });
+    return Object.keys(res);
+  }
+  function pickAlerts(now) {
+    var src = S.alertsSource, ubOk = fresh('ub', now), naOk = fresh('na', now);
+    if (src === 'neptun') return naOk ? 'na' : null;
+    if (src === 'ubilling') return ubOk ? 'ub' : null;
+    if (src === 'klimenko' || src === 'jaam') return D.altSrc === src && fresh('alt', now) ? 'alt' : null;
+    return naOk ? 'na' : (ubOk ? 'ub' : null);              // auto: NEPTUN, а якщо він мовчить — Ubilling
+  }
+  // Рівень області: жовтий — лише дрони, червоний — ракетна небезпека (крилаті/балістика/КАБ/стратегічна авіація)
+  // або офіційна тривога без відомих цілей. levelMode 'red' вимикає розрізнення. Темнішає за тривалістю ЦІЄЇ загрози.
+  var TS = {};
+  function regionAtLL(lat, lon) { try { var xy = project(lat, lon); return regionAt(xy[0], xy[1]); } catch (e) { return ''; } }
+  function composeRegions(official, thr, now) {
+    var out = {}, ids = {};
+    Object.keys(official).forEach(function (id) { ids[id] = 1; });
+    Object.keys(thr).forEach(function (id) { ids[id] = 1; });
+    Object.keys(ids).forEach(function (id) {
+      var a = official[id], t = thr[id] || {}, th = t.missile ? 'missile' : (t.drone ? 'drone' : ''), level, since;
+      if (th) { var f = TS[id + '|' + th] || (TS[id + '|' + th] = { t0: now }); f.seen = now; }
+      if (S.levelMode === 'red') { level = 'red'; since = a ? a.since : TS[id + '|' + th].t0; }
+      else if (th) { level = th === 'missile' ? 'red' : 'yellow'; since = TS[id + '|' + th].t0; }
+      else { level = 'red'; since = a.since; }
+      out[id] = { level: level, since: since, full: a ? a.full : true, alert: !!a, alertSince: a ? a.since : 0, th: th };
+    });
+    Object.keys(TS).forEach(function (k) { if (now - TS[k].seen > 60000) delete TS[k]; });
+    return out;
+  }
   function buildModel(now) {
     var M = { state: dataState(now), counts: {}, tracks: [], approx: [], regions: {}, rl: {}, asOf: 0, nearest: null, alertsFrom: null };
     CATS.forEach(function (c) { M.counts[c] = 0; });
-    M.asOf = Math.max(D.nt ? (D.nt.server || D.ok.nt) : 0, D.na ? D.ok.na : 0, D.au ? D.ok.au : 0);
+    M.asOf = Math.max(D.nt ? (D.nt.server || D.ok.nt) : 0, D.ok.na, D.ok.ub, D.ok.alt);
     if (M.state === 'off' || M.state === 'loading') return M;
-    var pick = null;
-    if (S.alertsSource === 'aiu') pick = fresh('au', now) ? 'au' : null;
-    else if (S.alertsSource === 'neptun') pick = fresh('na', now) ? 'na' : null;
-    else pick = fresh('au', now) ? 'au' : (fresh('na', now) ? 'na' : null);
+    var pick = pickAlerts(now), official = {}, thr = {};
     if (pick) {
-      M.regions = D[pick].regions; M.alertsFrom = pick;
-      D[pick].rl.forEach(function (r) {
+      official = D[pick].regions; M.alertsFrom = pick;
+      (D[pick].rl || []).forEach(function (r) {
         var o = M.rl[r.norm];
         if (!o || (r.level === 'red' && o.level !== 'red') || (r.level === o.level && r.since < o.since)) M.rl[r.norm] = { level: r.level, since: r.since, region: r.region, name: r.name };
       });
     }
-    var have = {};
     if (fresh('nt', now)) {
       D.nt.list.forEach(function (t) {
         if (!S.cats[t.cat]) return;
@@ -899,18 +936,16 @@ createApp: function (domEl) {
         if (t.advisory && !S.advisory) return;
         if (t.conf != null && t.conf < S.minConfidence) return;
         M.counts[t.cat] += t.count;
-        if (t.region) have[t.region + '|' + t.cat] = 1;
+        if (!t.advisory && t.status !== 'stale') {                 // «спостереження» й застарілі треки область не фарбують
+          var rid = t.region || (t.hasPos ? regionAtLL(t.lat, t.lon) : '');
+          if (rid) (thr[rid] || (thr[rid] = {}))[(t.cat === 'drone' || t.cat === 'other') ? 'drone' : 'missile'] = true;
+        }
         if (t.hasPos) M.tracks.push(t);
         else if (t.region) M.approx.push({ region: t.region, cat: t.cat, icon: t.icon, n: t.count, advisory: t.advisory, key: 'nt:' + t.id });
       });
     }
-    if (S.regionThreats && fresh('au', now)) {      // загрози «по області» — лише там, де NEPTUN нічого не показав
-      D.au.threats.forEach(function (th) {
-        if (!S.cats[th.cat] || have[th.region + '|' + th.cat]) return;
-        M.counts[th.cat] += 1;
-        M.approx.push({ region: th.region, cat: th.cat, icon: th.icon, n: 1, key: 'au:' + th.region + th.cat });
-      });
-    }
+    if (S.cats.ad) adRegions(now).forEach(function (id) { M.counts.ad += 1; M.approx.push({ region: id, cat: 'ad', icon: 'shield', n: 1, key: 'ad:' + id }); });
+    M.regions = composeRegions(official, thr, now);
     var P = placeObj();
     if (P) {
       M.tracks.forEach(function (t) {
@@ -924,21 +959,17 @@ createApp: function (domEl) {
 
   // --------------------------------------------------------------------- стрічка
   function cleanText(s, n) { s = String(s).replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
-  function feedSource(now) {
-    var nm = fresh('nm', now) && D.nm.list.length, au = fresh('au', now) && D.au.feed.length;
-    if (S.feedSource === 'neptun') return nm ? 'nm' : null;
-    if (S.feedSource === 'aiu') return au ? 'au' : null;
-    return nm ? 'nm' : (au ? 'au' : null);
-  }
-  function aiuLine(f) {
-    var r = regName(f.region);
-    if (f.kind === 'threat') return r + ': ' + iconName(f.icon) + ' (' + tr(f.level === 'yellow' ? 'yellow' : 'red').toLowerCase() + ')';
-    return tr(f.level === 'yellow' ? 'alertThreat' : 'alertStart', { r: r }) + (f.notes ? ' — ' + cleanText(f.notes, 80) : '');
-  }
   function feedItems(now) {
-    var src = feedSource(now), items = [];
-    if (src === 'nm') D.nm.list.forEach(function (m) { items.push({ t: m.t, ch: m.ch, text: cleanText(m.text, 150) }); });
-    else if (src === 'au') D.au.feed.forEach(function (f) { items.push({ t: f.t, ch: 'alerts.in.ua', text: aiuLine(f) }); });
+    var items = [], src = null;
+    if (fresh('nm', now) && D.nm.list.length) {
+      src = 'nm'; D.nm.list.forEach(function (m) { items.push({ t: m.t, ch: m.ch, text: cleanText(m.text, 150) }); });
+    } else {                                                          // запасний варіант: власний журнал цілей і тривог
+      src = 'local';
+      HIST.forEach(function (e) {
+        if (e.k === 'msg') return;
+        items.push({ t: e.t, ch: tr('local'), text: e.k === 'alert' ? tr(e.lv === 'end' ? 'alertEnd' : (e.lv === 'yellow' ? 'alertThreat' : 'alertStart'), { r: regName(e.region) }) : cleanText(e.text, 150) });
+      });
+    }
     return { src: src, items: items };
   }
 
@@ -960,17 +991,17 @@ createApp: function (domEl) {
   function diffRegions(M) {
     var ev = [];
     if (!M.alertsFrom) return ev;
-    if (!RS.prev) { RS.prev = {}; Object.keys(M.regions).forEach(function (id) { RS.prev[id] = M.regions[id].level; }); return ev; }
+    if (!RS.prev) { RS.prev = {}; Object.keys(M.regions).forEach(function (id) { var n = M.regions[id]; RS.prev[id] = { a: n.alert, th: n.th }; }); return ev; }
     Object.keys(M.regions).forEach(function (id) {
       var n = M.regions[id], o = RS.prev[id]; RS.miss[id] = 0;
-      if (!o) ev.push({ id: id, kind: 'start', level: n.level, since: n.since });
-      else if (o === 'yellow' && n.level === 'red') ev.push({ id: id, kind: 'start', level: 'red', since: n.since });
-      RS.prev[id] = n.level;
+      if (n.alert && !(o && o.a)) ev.push({ id: id, kind: 'alert', th: n.th, level: 'red', since: n.alertSince });
+      if (n.th && (!o || !o.th || (o.th === 'drone' && n.th === 'missile'))) ev.push({ id: id, kind: 'threat', th: n.th, level: n.level, since: n.since });
+      RS.prev[id] = { a: n.alert, th: n.th };
     });
     Object.keys(RS.prev).forEach(function (id) {
       if (M.regions[id]) return;
-      RS.miss[id] = (RS.miss[id] || 0) + 1;
-      if (RS.miss[id] >= 2) { ev.push({ id: id, kind: 'end' }); delete RS.prev[id]; delete RS.miss[id]; }   // відбій — лише після двох опитувань
+      var t0 = RS.miss[id] || (RS.miss[id] = now_());
+      if (now_() - t0 >= 15000) { ev.push({ id: id, kind: 'end' }); delete RS.prev[id]; delete RS.miss[id]; }   // відбій — лише якщо область мовчить ≥ 15 с
     });
     return ev;
   }
@@ -980,27 +1011,26 @@ createApp: function (domEl) {
       hAdd({ id: 't:' + t.id, t: now, k: 'tgt', cat: t.cat, icon: t.icon, n: t.count, region: t.region || '', adv: t.advisory ? 1 : 0,
              text: t.exp || tr('tgtNew', { t: iconName(t.icon), l: t.loc || regName(t.region) }) });
     });
-    var f = feedItems(now);
-    if (f.src === 'nm') D.nm.list.forEach(function (m) { hAdd({ id: 'm:' + hhash(m.ch + m.t + m.text.slice(0, 80)), t: m.t, k: 'msg', ch: m.ch, text: cleanText(m.text, 300) }); });
-    if (f.src === 'au' && D.au) D.au.feed.forEach(function (x) { if (x.kind === 'threat') hAdd({ id: 'u:' + x.region + ':' + x.icon + ':' + x.t, t: x.t || now, k: 'tgt', cat: x.cat, icon: x.icon, n: 1, region: x.region, text: aiuLine(x) }); });
+    if (fresh('nm', now)) D.nm.list.forEach(function (m) { hAdd({ id: 'm:' + hhash(m.ch + m.t + m.text.slice(0, 80)), t: m.t, k: 'msg', ch: m.ch, text: cleanText(m.text, 300) }); });
     ev.forEach(function (e) {
-      hAdd({ id: 'a:' + e.id + ':' + e.kind + ':' + e.level + ':' + Math.floor((e.since || now) / 60000), t: e.kind === 'end' ? now : (e.since || now), k: 'alert', lv: e.kind === 'end' ? 'end' : e.level, region: e.id });
+      hAdd({ id: 'a:' + e.id + ':' + e.kind + ':' + (e.th || '') + ':' + Math.floor((e.since || now) / 60000), t: e.kind === 'end' ? now : (e.since || now), k: 'alert', lv: e.kind === 'end' ? 'end' : e.level, th: e.th || '', region: e.id });
     });
     hFlush(now);
   }
 
   // --------------------------------------------------------------------- сповіщення
   var N = { primed: false, tr: {}, raion: undefined };
-  function run(cmd) { try { if (typeof domEl.__run === 'function') domEl.__run(cmd, function () { }); } catch (e) { } }
+  function run(cmd, cb) { try { if (typeof domEl.__run === 'function') domEl.__run(cmd, cb || function () { }); } catch (e) { } }
   function asq(s) { return String(s).replace(/[\\"]/g, '\\$&').replace(/[\r\n]+/g, ' '); }
   function shq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
   var ui = { panel: '', tab: 'display', hf: 'all', banner: null };
   var bannerTimer = 0;
-  function deliver(title, body, sound) {
+  function deliver(title, body, kind) {
     ui.banner = { title: title, body: body };
     clearTimeout(bannerTimer); bannerTimer = setTimeout(function () { ui.banner = null; if (api.drawBanner) api.drawBanner(); }, 25000);
     if (api.drawBanner) api.drawBanner();
-    if (typeof domEl.__run === 'function') run('/usr/bin/osascript -e ' + shq('display notification "' + asq(body) + '" with title "' + asq(title) + '"' + (sound && S.nSound ? ' sound name "Sosumi"' : '')));
+    playSound(kind);
+    if (typeof domEl.__run === 'function') run('/usr/bin/osascript -e ' + shq('display notification "' + asq(body) + '" with title "' + asq(title) + '"'));
     else try { if (window.Notification && Notification.permission === 'granted') new Notification(title, { body: body }); else if (window.Notification) Notification.requestPermission(); } catch (e) { }   // запасний шлях; банер у віджеті є завжди
   }
   function evaluateNotify(M, now, ev) {
@@ -1008,19 +1038,21 @@ createApp: function (domEl) {
     var P = placeObj(), home = homeId(), msgs = [], rIdx = myRaion(), rLv = 'none', rName = '';
     if (P && RG && rIdx >= 0) {
       var rg = RG.list[rIdx], ra = M.rl[rg.norm], st = M.regions[home]; rName = rg.n;
-      rLv = ra ? ra.level : (st && st.full ? st.level : 'none');
+      rLv = (ra || (st && st.alert && st.full)) ? 'red' : 'none';
     }
-    var regRed = false;
+    var regAlert = false;
     ev.forEach(function (e) {
       if (!home || e.id !== home) return;
-      if (e.kind === 'end') { if (S.nEnd) msgs.push({ title: tr('nEndT'), body: regName(home) + (P ? ' — ' + P.name : '') }); }
-      else if (S.nAlert) {
-        if (e.level === 'red') regRed = true;
-        msgs.push({ title: tr(e.level === 'red' ? 'nStartRed' : 'nStartYellow'), body: regName(home) + (P ? ' — ' + P.name : ''), sound: e.level === 'red' });
-      }
+      var where = regName(home) + (P ? ' — ' + P.name : '');
+      if (e.kind === 'end') { if (S.nEnd) msgs.push({ p: 6, title: tr('nEndT'), body: where }); }
+      else if (!S.nAlert) return;
+      else if (e.kind === 'alert') { regAlert = true; msgs.push({ p: 0, title: tr('nStartRed'), body: where + (e.th ? ' · ' + tr(e.th === 'missile' ? 'thMissile' : 'thDrone') : ''), kind: 'alert' }); }
+      else if (e.th === 'missile') msgs.push({ p: 1, thr: 1, title: tr('nMissile'), body: where, kind: 'alert' });
+      else msgs.push({ p: 5, thr: 1, title: tr('nDrone'), body: where, kind: '' });
     });
+    if (regAlert) msgs = msgs.filter(function (m) { return !m.thr; });        // «тривога» вже містить тип загрози
     if (rIdx >= 0) {
-      if (N.raion !== undefined && N.raion === 'none' && rLv === 'red' && S.nAlert && !regRed) msgs.push({ title: tr('nStartRaion'), body: rName, sound: true });
+      if (N.raion !== undefined && N.raion === 'none' && rLv === 'red' && S.nAlert && !regAlert) msgs.push({ p: 0, title: tr('nStartRaion'), body: rName, kind: 'alert' });
       N.raion = rLv;
     } else N.raion = undefined;
     var seen = {};
@@ -1028,34 +1060,118 @@ createApp: function (domEl) {
       M.tracks.forEach(function (t) {
         if (t.advisory || t.status === 'stale') return;
         seen[t.id] = 1;
-        var p = predict(t, now), d = distKm(P.lat, P.lon, p.lat, p.lon), rec = N.tr[t.id] || (N.tr[t.id] = { tier: 0, d: null, inR: false, miss: 0 });
+        var p = predict(t, now), d = distKm(P.lat, P.lon, p.lat, p.lon), rec = N.tr[t.id] || (N.tr[t.id] = { tier: 0, d: null, inR: false });
         var mult = t.icon === 'ballistic' ? 3 : (t.icon === 'cruise' ? 2 : 1), R = S.nRadius * mult;
         var brg = bearing(p.lat, p.lon, P.lat, P.lon), closing = p.hdg != null ? angDiff(brg, p.hdg) <= 70 : (rec.d != null && d < rec.d - 0.5);
         var tier = d <= R / 3 ? 2 : (d <= R ? 1 : 0), pushed = false;
         if (tier > rec.tier && (closing || tier === 2)) {
           rec.tier = tier; pushed = true;
           var eta = t.speed > 0 ? Math.max(1, Math.round(d / t.speed * 60)) : 0;
-          msgs.push({ title: tr('nNearT', { p: P.name }), sound: tier === 2 || mult > 1,
+          msgs.push({ p: (tier === 2 || mult > 1) ? 2 : 3, title: tr('nNearT', { p: P.name }), kind: (tier === 2 || mult > 1) ? 'alert' : 'near',
             body: iconName(t.icon) + (t.count > 1 ? ' ×' + t.count : '') + ', ' + Math.round(d) + ' ' + tr('km') + ' ' + dirName(bearing(P.lat, P.lon, p.lat, p.lon)) +
                   (closing ? ', ' + tr('toYou') : '') + (eta ? ', ' + tr('eta', { n: eta }) : '') });
         } else if (d > R * 1.3) rec.tier = 0;
-        rec.d = d; rec.miss = 0;
+        rec.d = d; rec.seen = now;
         if (RG && rIdx >= 0 && !rec.inR) {
           var xy = project(p.lat, p.lon);
-          if (pipRings(xy[0], xy[1], RG.list[rIdx].r)) { rec.inR = true; if (!pushed) msgs.push({ title: tr('nRaionT'), body: iconName(t.icon) + (t.count > 1 ? ' ×' + t.count : '') + ' — ' + rName, sound: true }); }
+          if (pipRings(xy[0], xy[1], RG.list[rIdx].r)) { rec.inR = true; if (!pushed) msgs.push({ p: 3, title: tr('nRaionT'), body: iconName(t.icon) + (t.count > 1 ? ' ×' + t.count : '') + ' — ' + rName, kind: 'alert' }); }
         }
       });
     }
     if (S.nNear && home) M.approx.forEach(function (a) {   // «ракета на область» без точки: лише факт, без відстані
       if (a.region !== home || a.advisory || a.key.indexOf('nt:') !== 0 || a.cat === 'ad' || a.cat === 'other') return;
       seen[a.key] = 1;
-      var rec = N.tr[a.key] || (N.tr[a.key] = { miss: 0, fresh: true });
-      if (rec.fresh) { rec.fresh = false; msgs.push({ title: tr('nRegT', { r: regName(home) }), body: iconName(a.icon) + (a.n > 1 ? ' ×' + a.n : ''), sound: a.cat === 'missile' }); }
+      var rec = N.tr[a.key] || (N.tr[a.key] = { fresh: true }); rec.seen = now;
+      if (rec.fresh) { rec.fresh = false; msgs.push({ p: 4, title: tr('nRegT', { r: regName(home) }), body: iconName(a.icon) + (a.n > 1 ? ' ×' + a.n : ''), kind: a.cat === 'missile' ? 'alert' : 'near' }); }
     });
-    Object.keys(N.tr).forEach(function (k) { if (!seen[k] && ++N.tr[k].miss > 6) delete N.tr[k]; });
+    Object.keys(N.tr).forEach(function (k) { if (!seen[k] && now - (N.tr[k].seen || 0) > 120000) delete N.tr[k]; });
     if (!N.primed) { N.primed = true; return; }                 // перше опитування лише запам'ятовує стан — без лавини сповіщень
     if (!S.notify || !msgs.length) return;
-    deliver(msgs[0].title, msgs[0].body + (msgs.length > 1 ? '  (+' + (msgs.length - 1) + ')' : ''), msgs.some(function (m) { return m.sound; }));
+    msgs.sort(function (a, b) { return (a.p == null ? 3 : a.p) - (b.p == null ? 3 : b.p); });   // найважливіше — першим
+    deliver(msgs[0].title, msgs[0].body + (msgs.length > 1 ? '  (+' + (msgs.length - 1) + ')' : ''), msgs.some(function (m) { return m.kind === 'alert'; }) ? 'alert' : (msgs.some(function (m) { return m.kind === 'near'; }) ? 'near' : ''));
+  }
+
+  // --------------------------------------------------------------------- звук (без сторонніх сайтів)
+  // Сирена й «наближення» генеруються тут же (8-бітний WAV, ~70 КБ) і програються системним afplay.
+  // Свій звук: config.soundUrlAlert / soundUrlNear (прямий URL на аудіофайл — завантажується один раз).
+  var TMP = '/tmp/ukraine-alert-widget';
+  function makeWav(kind) {
+    var sr = 16000, dur = kind === 'near' ? 1.9 : 4.2, n = Math.floor(sr * dur), buf = new Uint8Array(44 + n), dv = new DataView(buf.buffer), ph = 0, i;
+    function str(o, t) { for (var k = 0; k < t.length; k++) buf[o + k] = t.charCodeAt(k); }
+    str(0, 'RIFF'); dv.setUint32(4, 36 + n, true); str(8, 'WAVE'); str(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, sr, true); dv.setUint32(28, sr, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true); str(36, 'data'); dv.setUint32(40, n, true);
+    for (i = 0; i < n; i++) {
+      var t = i / sr, f, a;
+      if (kind === 'near') { var c = t % 0.6; f = 1050; a = c < 0.22 ? Math.min(1, c / 0.01, (0.22 - c) / 0.02) : 0; }                 // три короткі сигнали
+      else { var p = (t % 2.1) / 2.1; f = 520 + 420 * (p < 0.5 ? p * 2 : 2 - p * 2); a = Math.min(1, t / 0.05, (dur - t) / 0.15); }   // «виття»: 520→940→520 Гц
+      ph += 2 * Math.PI * f / sr;
+      var v = (Math.sin(ph) + 0.35 * Math.sin(2 * ph) + 0.2 * Math.sin(3 * ph)) / 1.55;
+      buf[44 + i] = Math.max(0, Math.min(255, Math.round(128 + 118 * a * v)));
+    }
+    return buf;
+  }
+  function toB64(u8) { var t = '', k; for (k = 0; k < u8.length; k += 0x8000) t += String.fromCharCode.apply(null, u8.subarray(k, k + 0x8000)); return btoa(t); }
+  function soundCmd(kind) {
+    if (S.nSoundType === 'system') return '/usr/bin/afplay /System/Library/Sounds/' + (kind === 'near' ? 'Glass' : 'Sosumi') + '.aiff >/dev/null 2>&1 &';
+    var url = kind === 'near' ? S.soundUrlNear : S.soundUrlAlert;
+    if (url && /^https?:\/\//.test(url)) {
+      var f = TMP + '/snd_' + hhash(url);
+      return 'mkdir -p ' + TMP + '; [ -s ' + f + ' ] || /usr/bin/curl -sL -m 20 -o ' + f + ' ' + shq(url) + '; /usr/bin/afplay ' + f + ' >/dev/null 2>&1 &';
+    }
+    var w = TMP + '/' + kind + '_v1.wav';
+    return 'mkdir -p ' + TMP + '; [ -s ' + w + ' ] || printf %s ' + shq(toB64(makeWav(kind))) + ' | (/usr/bin/base64 -D 2>/dev/null || /usr/bin/base64 -d) > ' + w + '; /usr/bin/afplay ' + w + ' >/dev/null 2>&1 &';
+  }
+  function playSound(kind) { if (!kind || !S.nSound || typeof domEl.__run !== 'function') return; run(soundCmd(kind)); }
+
+  // --------------------------------------------------------------------- живий потік NEPTUN (WebSocket) + запасні джерела тривог
+  var WS = { sock: null, state: 'off', last: 0, tries: 0, timer: 0, threats: {}, touched: 0, got: false };
+  function wsLive(now) { return WS.state === 'live' && (now || now_()) - WS.last < 40000; }
+  function wsFrame(env, now) {
+    if (!env || typeof env !== 'object') return;
+    var d = env.data;
+    if (env.type === 'snapshot' && d && Array.isArray(d.threats)) { WS.threats = {}; d.threats.forEach(function (t) { var n = normThreat(t); if (n) WS.threats[n.id] = n; }); WS.got = true; }
+    else if (env.type === 'upsert' && d && WS.got) { var n = normThreat(d); if (n) WS.threats[n.id] = n; else if (d.id != null) delete WS.threats[String(d.id)]; }
+    else if (env.type === 'remove' && d && WS.got) { delete WS.threats[String(d.id)]; }
+    else if (env.type === 'alerts' && d) { var na = normNeptunAlerts(d); if (na) { D.na = na; D.ok.na = now; D.err.na = ''; D.naSrc = 'ws'; D.naAt = now; } }
+    else if (env.type !== 'heartbeat') return;
+    WS.last = now; WS.tries = 0; WS.state = 'live';
+    if (WS.got) { D.nt = { list: Object.keys(WS.threats).map(function (k) { return WS.threats[k]; }), server: Date.parse(env.ts) || now }; D.ok.nt = now; D.err.nt = ''; }
+  }
+  function wsStop() { clearTimeout(WS.timer); if (WS.sock) { try { WS.sock.onclose = null; WS.sock.close(); } catch (e) { } } WS.sock = null; WS.state = 'off'; WS.got = false; }
+  function wsStart() {
+    clearTimeout(WS.timer);
+    if (!S.live || typeof WebSocket === 'undefined') { WS.state = 'off'; return; }
+    try { if (window.__uawWS && window.__uawWS !== WS.sock) { window.__uawWS.onclose = null; window.__uawWS.close(); } } catch (e) { }
+    var sock;
+    try { sock = new WebSocket('wss://neptun.in.ua/api/v1/stream'); } catch (e) { WS.state = 'retry'; WS.timer = setTimeout(wsStart, 10000); return; }
+    WS.sock = window.__uawWS = sock; WS.state = 'connecting'; WS.got = false;
+    sock.onmessage = function (e) {
+      try { wsFrame(JSON.parse(e.data), now_()); if (api.redraw && WS.got) api.redraw(); } catch (x) { console.log('[uaw] ws frame', x && x.message ? x.message : x); }
+    };
+    sock.onclose = sock.onerror = function () {
+      if (WS.sock !== sock) return;
+      WS.sock = null; WS.state = 'retry'; WS.got = false;
+      var wait = [1, 2, 5, 10, 30][Math.min(WS.tries++, 4)] * 1000;
+      WS.timer = setTimeout(wsStart, wait);
+    };
+  }
+  function wsTick(now) {                              // сторожовий таймер + «прапорець» для shell: не опитувати threats, поки потік живий
+    if (WS.sock && WS.state === 'live' && now - WS.last > 90000) { try { WS.sock.close(); } catch (e) { } }
+    if (wsLive(now) && now - WS.touched > 15000) { WS.touched = now; run('mkdir -p ' + TMP + '; touch ' + TMP + '/ws.live'); }
+  }
+  // Klymenko / JAAM через Ubilling (?source=…): опитуємо власним таймером лише коли їх обрано
+  var altBusy = false;
+  function altFetch(now) {
+    var src = S.alertsSource;
+    if ((src !== 'klimenko' && src !== 'jaam') || altBusy || typeof domEl.__run !== 'function' || now - D.ok.alt < 9000) return;
+    altBusy = true;
+    run('/usr/bin/curl -s --compressed -m 8 -A UkraineAlertWidget/4.0 ' + shq('https://ubilling.net.ua/aerialalerts/?source=' + src), function (a, b) {
+      altBusy = false;
+      var out = typeof b === 'string' ? b : (typeof a === 'string' ? a : ''), j, n;
+      try { j = JSON.parse(out); n = normUbilling(j); } catch (e) { n = null; }
+      if (!n) { D.err.alt = out ? 'bad format' : 'offline'; return; }
+      D.alt = n; D.altSrc = src; D.ok.alt = now_(); D.err.alt = '';
+    });
   }
 
   // --------------------------------------------------------------------- DOM
@@ -1063,7 +1179,7 @@ createApp: function (domEl) {
   var root = domEl.querySelector('.uaw');
   function $(s) { return root.querySelector(s); }
   var svg = $('.mapsvg'), gRg = $('.rgs'), gHomes = $('.homes'), gPlace = $('.place'), gTrails = $('.trails'), gRicons = $('.ricons'), gTracks = $('.tracks'), defsPats = $('.pats');
-  var regionEls = {}, regionBB = {}, cells = {}, fillCache = {}, rgEls = [], rgFill = [];
+  var regionEls = {}, regionBB = {}, cells = {}, fillCache = {}, alCache = {}, rgEls = [], rgFill = [];
   [].forEach.call(root.querySelectorAll('.reg'), function (el) { regionEls[el.getAttribute('data-r')] = el; });
   [].forEach.call(root.querySelectorAll('.cell'), function (el) { cells[el.getAttribute('data-c')] = { el: el, n: el.querySelector('.n') }; });
   (function normalizeSettings() { var c = S.place && cityById(S.place); if (c) S.home = c.region; else if (S.place) S.place = ''; })();
@@ -1146,9 +1262,11 @@ createApp: function (domEl) {
       if (rgDirty) buildRaionLayer();
       RG.list.forEach(function (g, i) {
         var a = M.rl[g.norm], f = '';
-        if (a && !(a.region && g.region && a.region !== g.region)) {
-          var rs = M.regions[g.region];
-          if (!(rs && rs.full)) { f = alertColor(a.level, (now - a.since) / 60000); matched[g.region] = 1; }
+        // назва + область із джерела тривог — головне; область полігона (за центроїдом) лише розрізняє однойменні райони
+        var same = RG.by[g.norm] && RG.by[g.norm].length > 1;
+        if (a && !(same && a.region && g.region && a.region !== g.region)) {
+          var rid = a.region || g.region, rs = M.regions[rid];
+          if (!(rs && rs.full)) { f = alertColor(rs ? rs.level : a.level, (now - a.since) / 60000); matched[rid] = 1; }
         }
         if (rgFill[i] !== f) { rgEls[i].style.fill = f; rgFill[i] = f; }
       });
@@ -1162,6 +1280,7 @@ createApp: function (domEl) {
         else fill = S.partial ? pattern(id, col) : col;          // запобіжник: райони не збіглися → штриховка, а не «тиша»
       }
       if (fillCache[id] !== fill) { regionEls[id].style.fill = fill; fillCache[id] = fill; }
+      var al = !!(st && st.alert); if (alCache[id] !== al) { regionEls[id].classList.toggle('al', al); alCache[id] = al; }
     });
     var home = homeId();
     sync(gHomes, home && regionEls[home] ? [{ key: 'h', x: 0, y: 0, sig: home, html: '<path class="homeline" d="' + regionEls[home].getAttribute('d') + '"/>' }] : []);
@@ -1217,13 +1336,15 @@ createApp: function (domEl) {
   function drawPcard(M, now) {
     var el = $('.pcard'), P = placeObj(), home = homeId(), off = M.state === 'off' || M.state === 'loading', h = '';
     if (P || home) {
-      var st = M.regions[home], lv = st ? st.level : 'none', since = st ? st.since : 0;
-      if (P && RG) {
-        var ri = myRaion();
-        if (ri >= 0) { var ra = M.rl[RG.list[ri].norm]; if (ra) { lv = ra.level; since = ra.since; } else if (!(st && st.full)) lv = 'none'; }
+      var st = M.regions[home], alertOn = !!(st && st.alert), th = st ? st.th : '', since = st ? st.since : 0, txt, col;
+      if (P && RG) { var ri = myRaion(); if (ri >= 0) alertOn = !!(M.rl[RG.list[ri].norm] || (st && st.alert && st.full)); }
+      if (off) { txt = tr('noData'); col = '#8E8E93'; }
+      else if (!st || (!alertOn && !th)) { txt = tr('calm'); col = '#32D74B'; }
+      else {
+        txt = alertOn ? tr('red') + (th ? ' · ' + tr(th === 'missile' ? 'thMissile' : 'thDrone') : '') : tr(th === 'missile' ? 'nMissile' : 'nDrone');
+        if (since) txt += ' · ' + fmtDur(now - since).replace(/ /g, '\u00a0');
+        col = (st.level === 'yellow') ? '#FFD60A' : '#FF453A';
       }
-      var col = off ? '#8E8E93' : (lv === 'red' ? '#FF453A' : (lv === 'yellow' ? '#FFD60A' : '#32D74B'));
-      var txt = off ? tr('noData') : (lv === 'none' ? tr('calm') : tr(lv === 'red' ? 'red' : 'yellow') + (since ? ' · ' + fmtDur(now - since) : ''));
       h = '<b>' + esc(P ? P.name : regName(home)) + '</b><div class="st"><i class="sd" style="--hc:' + col + '"></i><span>' + esc(txt) + '</span></div>';
       if (P && !off) {
         var n = M.nearest;
@@ -1242,7 +1363,7 @@ createApp: function (domEl) {
     var el = $('.ticker'), on = S.ticker && !S.compact; el.classList.toggle('on', !!on);
     if (!on) return;
     var f = feedItems(now), cut = now - 3 * 3600e3, items = f.items.filter(function (i) { return i.t >= cut; }).slice(0, 8);
-    setHTML($('.tk-name'), f.src === 'au' || (!f.src && S.feedSource === 'aiu') ? 'alerts.in.ua' : 'NEPTUN');
+    setHTML($('.tk-name'), f.src === 'local' ? esc(tr('local')) : 'NEPTUN');
     var track = $('.tk-track'), html, chars = 0;
     if (!items.length) html = '<span class="tk-empty">' + esc(tr('tickerEmpty')) + '</span>';
     else {
@@ -1262,6 +1383,7 @@ createApp: function (domEl) {
   }
   function drawChrome(M) {
     root.setAttribute('data-state', M.state);
+    root.setAttribute('data-live', wsLive(now_()) ? '1' : '0');
     $('.ttl').textContent = tr('title');
     setHTML($('.asof'), tr('asOf') + ' <b>' + (M.asOf ? fmtClock(M.asOf) : '—') + '</b>');
     setHTML($('.legal'), tr('legal'));
@@ -1287,12 +1409,10 @@ createApp: function (domEl) {
   function cycH(kind, label) { return '<div class="seg"><button data-cyc="' + kind + '" data-dir="-1">‹</button><span class="lbl">' + esc(label) + '</span><button data-cyc="' + kind + '" data-dir="1">›</button></div>'; }
   function row(label, ctl) { return '<div class="row"><span>' + label + '</span>' + ctl + '</div>'; }
   function srcStatus() {
-    function one(name, k, skip) {
-      if (skip) return '<b>' + name + '</b>: ' + skip;
-      return '<b>' + name + '</b>: ' + (D.err[k] ? tr('error') + ' (' + esc(D.err[k]) + ')' : (D.ok[k] ? tr('ok') : '…'));
-    }
-    return one('NEPTUN', 'nt') + ' &nbsp; ' + one('alerts', 'na') + ' &nbsp; ' + one('messages', 'nm') + '<br>' + one('alerts.in.ua', 'au', D.hasToken === false ? tr('noToken') : '') +
-           ' &nbsp; <b>districts</b>: ' + (RG ? RG.list.length : '…');
+    function one(name, k) { return '<b>' + name + '</b>: ' + (D.err[k] ? tr('error') + ' (' + esc(D.err[k]) + ')' : (D.ok[k] ? tr('ok') : '…')); }
+    var st = WS.state === 'live' ? tr('sLive') : (WS.state === 'off' ? tr('sOff') : tr('sRetry'));
+    return one('NEPTUN', 'nt') + ' &nbsp; ' + one('alerts', 'na') + ' &nbsp; ' + one('messages', 'nm') + '<br>' + one('Ubilling', 'ub') +
+           ' &nbsp; <b>' + tr('stream') + '</b>: ' + st + (WS.state === 'live' ? ' (' + tr('frameAgo', { n: Math.max(0, Math.round((now_() - WS.last) / 1000)) }) + ')' : '') + ' &nbsp; <b>districts</b>: ' + (RG ? RG.list.length : '…');
   }
   function settingsHTML() {
     var tabs = '<div class="tabs">' + segH('U', 'tab', [['display', tr('tDisplay')], ['data', tr('tData')], ['notify', tr('tAlerts')]], ui.tab) + '</div>', h = tabs;
@@ -1303,26 +1423,28 @@ createApp: function (domEl) {
       h += row(tr('lang'), segH('S', 'lang', [['en', 'English'], ['uk', 'Українська']], S.lang)) +
            row(tr('appearance'), segH('S', 'appearance', [['dark', tr('dark')], ['light', tr('light')], ['auto', tr('auto')]], S.appearance)) +
            row(tr('palette'), segH('S', 'palette', [['ember', tr('ember')], ['classic', tr('classic')]], S.palette)) +
+           row(tr('levelMode'), segH('S', 'levelMode', [['type', tr('byType')], ['red', tr('allRed')]], S.levelMode)) + '<div class="hint" style="margin:-2px 0 4px">' + tr('levelHint') + '</div>' +
            row(tr('darkest'), segH('S', 'darkestAfterMin', [[60, '1 ' + tr('h')], [180, '3 ' + tr('h')], [360, '6 ' + tr('h')], [720, '12 ' + tr('h')]], S.darkestAfterMin)) +
            row(tr('targets'), '<div class="chips">' + chips + '</div>') +
            row(tr('size'), segH('S', 'size', [[0.8, '80%'], [1, '100%'], [1.2, '120%'], [1.4, '140%']], S.size)) +
            '<div class="togs">' + togH('districts', tr('tDistricts')) + togH('partial', tr('tPartial')) + togH('course', tr('tCourse')) + togH('ticker', tr('tTicker')) + togH('compact', tr('tCompact')) + '</div>' +
            row(tr('speed'), segH('S', 'tickerSpeed', [[0.7, tr('slow')], [1, tr('normal')], [1.4, tr('fast')]], S.tickerSpeed));
     } else if (ui.tab === 'data') {
-      h += row(tr('src'), segH('S', 'alertsSource', [['auto', tr('auto')], ['neptun', 'NEPTUN'], ['aiu', 'alerts.in.ua']], S.alertsSource)) +
-           row(tr('feed'), segH('S', 'feedSource', [['auto', tr('auto')], ['neptun', 'NEPTUN'], ['aiu', 'alerts.in.ua']], S.feedSource)) +
+      h += row(tr('src'), cycH('src', SRC_LABEL[S.alertsSource] || 'Auto')) +
            row(tr('conf'), segH('S', 'minConfidence', [[0, tr('any')], [1, tr('medium')], [2, tr('high')]], S.minConfidence)) +
            row(tr('keep'), segH('S', 'historyHours', [[6, '6 ' + tr('h')], [24, '24 ' + tr('h')], [72, '72 ' + tr('h')]], S.historyHours)) +
-           '<div class="togs">' + togH('regionThreats', tr('tRegionThreats')) + togH('advisory', tr('tAdvisory')) + togH('stale', tr('tStale')) + '</div>' +
+           '<div class="togs">' + togH('live', tr('tLive')) + togH('advisory', tr('tAdvisory')) + togH('stale', tr('tStale')) + '</div>' +
            '<div class="hint">' + srcStatus() + '</div><button class="btn" data-act="reset">' + tr('reset') + '</button>';
     } else {
       var home = homeId(), opts = CITIES.filter(function (c) { return c.region === home; }), cur = S.place && cityById(S.place);
       h += '<div class="togs">' + togH('notify', tr('nOn')) + togH('nSound', tr('nSound')) + '</div>' +
+           row(tr('sndType'), segH('S', 'nSoundType', [['siren', tr('siren')], ['system', tr('system')]], S.nSoundType)) +
            row(tr('home'), cycH('home', home ? regName(home) : tr('none'))) +
            row(tr('place'), home && opts.length ? cycH('place', cur ? cityName(cur) : tr('regionOnly')) : '<span class="hint">—</span>') +
            '<div class="togs">' + togH('nAlert', tr('nAlert')) + togH('nEnd', tr('nEnd')) + togH('nNear', tr('nNear')) + '</div>' +
            row(tr('radius'), segH('S', 'nRadius', [[25, '25 ' + tr('km')], [50, '50 ' + tr('km')], [100, '100 ' + tr('km')], [150, '150 ' + tr('km')]], S.nRadius)) +
-           '<button class="btn" data-act="test">' + tr('nTest') + '</button><div class="hint">' + tr('nHint') + '</div>';
+           '<button class="btn" data-act="test">' + tr('nTest') + '</button><button class="btn" data-act="testsiren">' + tr('tSiren') + '</button><button class="btn" data-act="testnear">' + tr('tNear') + '</button>' +
+           '<div class="hint">' + tr('nHint') + '<br>' + tr('nHint2') + '</div>';
     }
     return h;
   }
@@ -1331,7 +1453,7 @@ createApp: function (domEl) {
     if (e.k === 'tgt') { ic = e.icon; cls = e.icon === 'recon' ? 'recon' : e.cat; tx = esc(e.text) + (e.n > 1 ? ' ×' + e.n : ''); sub = e.region ? esc(regName(e.region)) : ''; }
     else if (e.k === 'alert') {
       ic = 'alert'; cls = e.lv === 'end' ? 'ad' : (e.lv === 'yellow' ? 'recon' : 'missile');
-      tx = esc(tr(e.lv === 'end' ? 'alertEnd' : (e.lv === 'yellow' ? 'alertThreat' : 'alertStart'), { r: regName(e.region) }));
+      tx = esc(tr(e.lv === 'end' ? 'alertEnd' : (e.th ? (e.th === 'missile' ? 'thMissileIn' : 'thDroneIn') : (e.lv === 'yellow' ? 'alertThreat' : 'alertStart')), { r: regName(e.region) }));
     } else { ic = 'msg'; cls = 'other'; tx = esc(e.text); sub = esc(e.ch); }
     return '<div class="hrow"><svg class="hi c-' + cls + '" viewBox="-13 -13 26 26"><use href="#uaw-i-' + ic + '"/></svg><div><div class="tx">' + tx + '</div>' +
            (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div><span class="tm">' + fmtWhen(e.t) + '</span></div>';
@@ -1370,17 +1492,20 @@ createApp: function (domEl) {
     if (act === 'panel') { var v = el.getAttribute('data-val'); ui.panel = ui.panel === v ? '' : v; if (ui.panel === 'settings' && ui.tab !== 'display' && ui.tab !== 'data' && ui.tab !== 'notify') ui.tab = 'display'; save = false; }
     else if (act === 'banner') { ui.banner = null; drawBanner(); return; }
     else if (act === 'hclear') { HIST = []; hIds = {}; hDirty = true; hFlush(now_()); save = false; }
-    else if (act === 'test') { deliver(tr('testT'), tr('testB'), true); return; }
+    else if (act === 'test') { deliver(tr('testT'), tr('testB'), 'alert'); return; }
+    else if (act === 'testsiren') { run(soundCmd('alert')); return; }
+    else if (act === 'testnear') { run(soundCmd('near')); return; }
     else if (act === 'reset') { S = clone(DEFAULTS); (function () { var c = S.place && cityById(S.place); if (c) S.home = c.region; })(); try { localStorage.removeItem(SKEY); } catch (e) { } save = false; myR.key = ''; }
     else if (el.hasAttribute('data-set')) {
       var key = el.getAttribute('data-set'), val = JSON.parse(el.getAttribute('data-val'));
       if (el.getAttribute('data-sc') === 'U') { ui[key] = val; save = false; } else S[key] = val;
     }
-    else if (el.hasAttribute('data-tog')) { var k = el.getAttribute('data-tog'); S[k] = !S[k]; }
+    else if (el.hasAttribute('data-tog')) { var k = el.getAttribute('data-tog'); S[k] = !S[k]; if (k === 'live') { if (S.live) wsStart(); else wsStop(); } }
     else if (el.hasAttribute('data-cat')) { var c = el.getAttribute('data-cat'); S.cats[c] = !S.cats[c]; }
     else if (el.hasAttribute('data-cyc')) {
       var dir = +el.getAttribute('data-dir');
-      if (el.getAttribute('data-cyc') === 'home') { var ids = [''].concat(REG_ORDER); S.home = ids[(ids.indexOf(S.home) + dir + ids.length) % ids.length]; S.place = ''; }
+      if (el.getAttribute('data-cyc') === 'src') { S.alertsSource = ALERT_SRC[(ALERT_SRC.indexOf(S.alertsSource) + dir + ALERT_SRC.length) % ALERT_SRC.length]; D.ok.alt = 0; }
+      else if (el.getAttribute('data-cyc') === 'home') { var ids = [''].concat(REG_ORDER); S.home = ids[(ids.indexOf(S.home) + dir + ids.length) % ids.length]; S.place = ''; }
       else {
         var list = [''].concat(CITIES.filter(function (x) { return x.region === homeId(); }).sort(function (a, b) { return cityName(a).localeCompare(cityName(b)); }).map(function (x) { return x.id; }));
         S.place = list[(list.indexOf(S.place) + dir + list.length) % list.length];
@@ -1397,18 +1522,25 @@ createApp: function (domEl) {
     drawChrome(M); drawCounters(M); drawPcard(M, now); drawTicker(now);
     if (!S.compact) { drawRegions(M, now); drawMarkers(M, now); }
   }
+  function process(now) {                    // один прохід: модель → події/журнал → сповіщення → малювання
+    var M = buildModel(now), ev = diffRegions(M);
+    logEvents(M, now, ev); evaluateNotify(M, now, ev); redraw(now);
+  }
+  var pend = 0;
+  api.redraw = function () { if (pend) return; pend = setTimeout(function () { pend = 0; try { process(now_()); } catch (e) { console.log('[uaw] ws', e); } }, 250); };   // кадри потоку об'єднуємо
   function fullRedraw() {
     applyLook(); drawPanel(); drawBanner();
-    fillCache = {}; rgFill = [];
+    fillCache = {}; alCache = {}; rgFill = [];
     redraw(now_());
   }
   api.fullRedraw = fullRedraw; api.drawBanner = drawBanner;
 
   fullRedraw();
+  wsStart();
   if (window.__uawTimer) clearInterval(window.__uawTimer);
   window.__uawTimer = setInterval(function () {
     try {
-      redraw(now_());
+      var nw = now_(); wsTick(nw); altFetch(nw); redraw(nw);
       if (ui.panel === 'settings' && ui.tab === 'data') { var h = $('.panel .hint'); if (h) setHTML(h, srcStatus()); }
       if (ui.panel === 'history' && hSig !== HIST.length + ':' + (HIST[0] ? HIST[0].id : '')) drawPanel(true);
     } catch (e) { console.log('[uaw] tick', e); }
@@ -1419,13 +1551,11 @@ createApp: function (domEl) {
     onOutput: function (out) {
       try {
         var now = now_(); ingest(out, now);
-        var M = buildModel(now), ev = diffRegions(M);
-        logEvents(M, now, ev); evaluateNotify(M, now, ev);
         if (pendingRG) { var b = pendingRG; pendingRG = null; if (!RG || now - RGt > 6 * 864e5) loadRaions(b); }
-        redraw(now);
+        process(now);
       } catch (e) { console.log('[uaw] update', e); }
     },
     _debug: { D: D, S: function () { return S; }, ui: ui, buildModel: buildModel, parseOutput: parseOutput, project: project, regionId: regionId, predict: predict,
-              alertColor: alertColor, HIST: function () { return HIST; }, RG: function () { return RG; }, normRaion: normRaion, evaluateNotify: evaluateNotify, N: N, feedItems: feedItems, deliver: deliver }
+              alertColor: alertColor, HIST: function () { return HIST; }, RG: function () { return RG; }, normRaion: normRaion, evaluateNotify: evaluateNotify, N: N, feedItems: feedItems, deliver: deliver, WS: WS, wsFrame: wsFrame, wsLive: wsLive, soundCmd: soundCmd, makeWav: makeWav, adRegions: adRegions, normUbilling: normUbilling, regionsInText: regionsInText }
   };
 }
