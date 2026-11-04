@@ -53,7 +53,7 @@
 
 ## Встановлення
 
-Потрібно: macOS (орієнтовно 13.3 і новіше; оформлення розраховане на macOS 26) та [Übersicht](https://tracesof.net/uebersicht/).
+Потрібно: macOS (орієнтовно 12.0 і новіше; оформлення розраховане на macOS 26) та [Übersicht](https://tracesof.net/uebersicht/).
 
 1. Завантажте та встановіть [Übersicht](https://tracesof.net/uebersicht/), запустіть його (за потреби дозвольте запуск у System Settings → Privacy & Security).
 2. Завантажте віджет: [Releases](../../releases) або
